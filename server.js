@@ -1,6 +1,10 @@
-const express    = require("express");
-const puppeteer  = require("puppeteer");
-const app        = express();
+const express   = require("express");
+const puppeteer = require("puppeteer");
+const cors      = require("cors");
+
+const app = express();
+
+app.use(cors());
 
 app.use(express.json({ limit: "10mb" }));
 
