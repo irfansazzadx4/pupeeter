@@ -11,47 +11,45 @@ app.use(express.json({ limit: "10mb" }));
 const SECRET = process.env.SECRET || "nid_pdf_secret_2025";
 const PORT   = process.env.PORT   || 3001;
 
-app.get("/", (req, res) => res.send("Puppeteer PDF API running ✅"));
 
 app.post("/pdf", async (req, res) => {
     if (req.body.secret !== SECRET) {
         return res.status(403).json({ success: false, error: "Unauthorized" });
     }
 
-    const { html } = req.body;
-    if (!html) {
-        return res.status(400).json({ success: false, error: "No HTML" });
+    const { html, url } = req.body; // html অথবা url যেকোনো একটা নিবে
+
+    if (!html && !url) {
+        return res.status(400).json({ success: false, error: "No HTML or URL provided" });
     }
 
     let browser;
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-zygote",
-            ],
+            args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--no-zygote"],
         });
 
         const page = await browser.newPage();
-        await page.setContent(html, { waitUntil: "networkidle0", timeout: 60000 });
 
-        // window.print() বন্ধ
-        await page.evaluate(() => { window.print = () => {}; });
+        if (url) {
+            // যদি লিঙ্ক দেওয়া হয়
+            await page.goto(url, { waitUntil: "networkidle0", timeout: 60000 });
+        } else {
+            // যদি সরাসরি HTML কোড দেওয়া হয়
+            await page.setContent(html, { waitUntil: "networkidle0", timeout: 60000 });
+        }
 
         const pdfBuf = await page.pdf({
-            format         : "Letter",
+            format: "Letter",
             printBackground: true,
-            margin         : { top: "0", right: "0", bottom: "0", left: "0" },
+            margin: { top: "0", right: "0", bottom: "0", left: "0" },
         });
 
         res.json({
             success: true,
-            pdf    : Buffer.from(pdfBuf).toString("base64"),
-            size   : pdfBuf.length,
+            pdf: Buffer.from(pdfBuf).toString("base64"),
+            size: pdfBuf.length,
         });
 
     } catch (err) {
@@ -60,5 +58,4 @@ app.post("/pdf", async (req, res) => {
         if (browser) await browser.close().catch(() => {});
     }
 });
-
 app.listen(PORT, () => console.log(`✅ PDF API on port ${PORT}`));
