@@ -1,56 +1,60 @@
-const express = require('express');
-const puppeteer = require('puppeteer');  // ✅ এই line টা আছে কিনা check করুন
+const express    = require("express");
+const puppeteer  = require("puppeteer");
+const app        = express();
 
-const app = express();
+app.use(express.json({ limit: "10mb" }));
 
-app.get('/test', async (req, res) => {
+const SECRET = process.env.SECRET || "nid_pdf_secret_2025";
+const PORT   = process.env.PORT   || 3001;
+
+app.get("/", (req, res) => res.send("Puppeteer PDF API running ✅"));
+
+app.post("/pdf", async (req, res) => {
+    if (req.body.secret !== SECRET) {
+        return res.status(403).json({ success: false, error: "Unauthorized" });
+    }
+
+    const { html } = req.body;
+    if (!html) {
+        return res.status(400).json({ success: false, error: "No HTML" });
+    }
+
+    let browser;
     try {
-        const browser = await puppeteer.launch({
-            headless: true,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+        browser = await puppeteer.launch({
+            headless: "new",
             args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage'
-            ]
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-zygote",
+            ],
         });
 
         const page = await browser.newPage();
+        await page.setContent(html, { waitUntil: "networkidle0", timeout: 60000 });
 
-        await page.goto(
-            'https://server24.kesug.com/bot/storage/69fb96176df69_card.html?i=2',
-            { waitUntil: 'networkidle0' }
-        );
+        // window.print() বন্ধ
+        await page.evaluate(() => { window.print = () => {}; });
 
-        await page.evaluate(() => {
-            document.body.style.marginTop = '0.3in';
-            document.body.style.paddingTop = '0.3in';
-        });
-
-        await page.emulateMediaType('screen');
-
-        await page.pdf({
-            path: 'nid.pdf',
-            format: 'Letter',
+        const pdfBuf = await page.pdf({
+            format         : "Letter",
             printBackground: true,
-            preferCSSPageSize: false,
-            margin: {
-                top: '0px',
-                right: '0px',
-                bottom: '0px',
-                left: '0px'
-            }
+            margin         : { top: "0", right: "0", bottom: "0", left: "0" },
         });
 
-        await browser.close();
-        res.send('PDF Generated Successfully');
+        res.json({
+            success: true,
+            pdf    : Buffer.from(pdfBuf).toString("base64"),
+            size   : pdfBuf.length,
+        });
 
-    } catch (e) {
-        console.log(e);
-        res.send(e.message);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        if (browser) await browser.close().catch(() => {});
     }
 });
 
-app.listen(3000, () => {
-    console.log('Server Running On Port 3000');
-});
+app.listen(PORT, () => console.log(`✅ PDF API on port ${PORT}`));
