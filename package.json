@@ -1,2 +1,5 @@
-npm init -y
-npm install express puppeteer
+{
+  "scripts": {
+    "start": "node server.js"
+  }
+}
