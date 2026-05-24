@@ -3,8 +3,6 @@ const puppeteer = require("puppeteer");
 const cors      = require("cors");
 const https     = require("https");
 const http      = require("http");
-const fs        = require("fs");
-const path      = require("path");
 
 const app = express();
 app.use(cors());
@@ -13,16 +11,22 @@ app.use(express.json({ limit: "50mb" }));
 const SECRET = process.env.SECRET || "nid_pdf_secret_2025";
 const PORT   = process.env.PORT   || 8080;
 
-// ── Font URLs (fallback order) ──
-const FONT_SOURCES = [
-  "https://auto.onlinebd.top/fonts/Bangla.ttf",
-  "https://onlinebd.top/fonts/Bangla.ttf",
-  "https://fonts.maateen.me/solaiman-lipi/SolaimanLipi.ttf",
-];
+// ── Font sources (Bangla + Arial) ──
+const FONT_SOURCES = {
+  bangla: [
+    "https://auto.onlinebd.top/fonts/Bangla.ttf",
+    "https://onlinebd.top/fonts/Bangla.ttf",
+    "https://fonts.maateen.me/solaiman-lipi/SolaimanLipi.ttf",
+  ],
+  arial: [
+    "https://auto.onlinebd.top/fonts/Arial.ttf",
+    "https://onlinebd.top/fonts/Arial.ttf",
+    // fallback: Arial is usually available on system, but embed anyway
+  ],
+};
 
-// ── Font একবার download করে memory তে রাখো ──
-let fontBase64 = null;
-let fontLoaded = false;
+let fonts = { bangla: null, arial: null };
+let fontsLoaded = false;
 
 function fetchUrl(url) {
   return new Promise((resolve, reject) => {
@@ -34,6 +38,9 @@ function fetchUrl(url) {
       if (res.statusCode === 301 || res.statusCode === 302) {
         return resolve(fetchUrl(res.headers.location));
       }
+      if (res.statusCode !== 200) {
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
       const chunks = [];
       res.on("data", c => chunks.push(c));
       res.on("end", () => resolve(Buffer.concat(chunks)));
@@ -43,75 +50,87 @@ function fetchUrl(url) {
   });
 }
 
-async function loadFont() {
-  if (fontLoaded) return;
-  for (const url of FONT_SOURCES) {
+async function loadFontFromSources(sources, name) {
+  for (const url of sources) {
     try {
-      console.log(`⏳ Font loading: ${url}`);
+      console.log(`⏳ Loading ${name}: ${url}`);
       const buf = await fetchUrl(url);
-      if (buf.length > 10000) { // valid font check
-        fontBase64 = buf.toString("base64");
-        fontLoaded = true;
-        console.log(`✅ Font loaded: ${url} (${Math.round(buf.length/1024)}KB)`);
-        return;
+      if (buf.length > 5000) {
+        const b64 = buf.toString("base64");
+        console.log(`✅ ${name} loaded: ${Math.round(buf.length / 1024)}KB`);
+        return b64;
       }
     } catch (e) {
-      console.log(`⚠️ Font failed: ${url} — ${e.message}`);
+      console.log(`⚠️ ${name} failed: ${url} — ${e.message}`);
     }
   }
-  console.error("❌ All font sources failed — will use system font");
+  return null;
+}
+
+async function loadAllFonts() {
+  [fonts.bangla, fonts.arial] = await Promise.all([
+    loadFontFromSources(FONT_SOURCES.bangla, "Bangla"),
+    loadFontFromSources(FONT_SOURCES.arial,  "Arial"),
+  ]);
+  fontsLoaded = true;
+  console.log(`✅ Fonts ready — Bangla: ${fonts.bangla ? "OK" : "MISSING"}, Arial: ${fonts.arial ? "OK" : "MISSING"}`);
 }
 
 function buildFontCSS() {
-  if (fontBase64) {
-    return `
-<style id="font-fix">
+  let css = "";
+
+  if (fonts.bangla) {
+    css += `
 @font-face {
-    font-family: 'Solaimanlipi';
-    src: url('data:font/truetype;base64,${fontBase64}') format('truetype');
-    font-weight: normal;
-    font-style: normal;
-}
-@font-face {
-    font-family: 'Solaiman Lipi';
-    src: url('data:font/truetype;base64,${fontBase64}') format('truetype');
-    font-weight: normal;
-    font-style: normal;
+  font-family: 'Bangla';
+  src: url('data:font/truetype;base64,${fonts.bangla}') format('truetype');
+  font-weight: normal; font-style: normal;
 }
 @font-face {
-    font-family: 'Bangla';
-    src: url('data:font/truetype;base64,${fontBase64}') format('truetype');
-    font-weight: normal;
-    font-style: normal;
+  font-family: 'Solaimanlipi';
+  src: url('data:font/truetype;base64,${fonts.bangla}') format('truetype');
+  font-weight: normal; font-style: normal;
 }
-* {
-    font-family: 'Solaimanlipi', 'Solaiman Lipi', 'Bangla', Arial, sans-serif !important;
-}
-</style>`;
+@font-face {
+  font-family: 'Solaiman Lipi';
+  src: url('data:font/truetype;base64,${fonts.bangla}') format('truetype');
+  font-weight: normal; font-style: normal;
+}`;
   }
-  // Fallback: URL দিয়ে try (কাজ না করলেও system font যাবে)
-  return `
-<style id="font-fix">
+
+  if (fonts.arial) {
+    css += `
 @font-face {
-    font-family: 'Solaimanlipi';
-    src: url('https://auto.onlinebd.top/fonts/Bangla.ttf') format('truetype');
-}
-* { font-family: 'Solaimanlipi', Arial, sans-serif !important; }
-</style>`;
+  font-family: 'Arial';
+  src: url('data:font/truetype;base64,${fonts.arial}') format('truetype');
+  font-weight: normal; font-style: normal;
+}`;
+  }
+
+  css += `
+* {
+  font-family: 'Bangla', 'Solaimanlipi', 'Solaiman Lipi', Arial, sans-serif !important;
+}`;
+
+  return css;
 }
 
 function injectFontFix(html) {
-  const css = buildFontCSS();
-  // existing @font-face গুলো remove করো যাতে conflict না হয়
+  // পুরনো embedded-fonts style সরাও (conflict এড়াতে)
   let fixed = html.replace(/<style[^>]*id="embedded-fonts"[^>]*>[\s\S]*?<\/style>/gi, "");
+  // পুরনো font-fix style সরাও
+  fixed = fixed.replace(/<style[^>]*id="font-fix"[^>]*>[\s\S]*?<\/style>/gi, "");
+
+  const tag = `<style id="font-fix">${buildFontCSS()}</style>`;
+
   if (fixed.includes("</head>")) {
-    return fixed.replace("</head>", css + "\n</head>");
+    return fixed.replace("</head>", tag + "\n</head>");
   }
-  return css + fixed;
+  return tag + fixed;
 }
 
-// ── Startup এ font load ──
-loadFont();
+// Startup font load
+loadAllFonts();
 
 app.post("/pdf", async (req, res) => {
   if (req.body.secret !== SECRET) {
@@ -123,8 +142,7 @@ app.post("/pdf", async (req, res) => {
     return res.status(400).json({ success: false, error: "No HTML or URL provided" });
   }
 
-  // Font এখনো load না হলে একবার try
-  if (!fontLoaded) await loadFont();
+  if (!fontsLoaded) await loadAllFonts();
 
   let browser;
   try {
@@ -138,9 +156,7 @@ app.post("/pdf", async (req, res) => {
         "--no-zygote",
         "--disable-web-security",
         "--allow-running-insecure-content",
-        // বাংলা font render এর জন্য
         "--font-render-hinting=none",
-        "--disable-font-subpixel-positioning",
       ],
     });
 
@@ -153,13 +169,10 @@ app.post("/pdf", async (req, res) => {
       await page.goto(url, { waitUntil: "networkidle0", timeout: 90000 });
     } else {
       const fixedHtml = injectFontFix(html);
-      await page.setContent(fixedHtml, {
-        waitUntil: "networkidle0",
-        timeout: 90000,
-      });
+      await page.setContent(fixedHtml, { waitUntil: "networkidle0", timeout: 90000 });
     }
 
-    // সব image load হওয়া পর্যন্ত wait
+    // Images load wait
     await page.evaluate(async () => {
       const imgs = Array.from(document.images);
       if (!imgs.length) return;
@@ -186,7 +199,7 @@ app.post("/pdf", async (req, res) => {
       setTimeout(resolve, 5000);
     })).catch(() => {});
 
-    // Font render extra wait
+    // Font render wait
     await new Promise(r => setTimeout(r, 2000));
 
     const pdfBuf = await page.pdf({
@@ -196,7 +209,7 @@ app.post("/pdf", async (req, res) => {
       preferCSSPageSize: true,
     });
 
-    console.log(`✅ PDF: ${pdfBuf.length} bytes | Font: ${fontLoaded ? "embedded" : "fallback"}`);
+    console.log(`✅ PDF: ${pdfBuf.length} bytes`);
     res.json({
       success: true,
       pdf    : Buffer.from(pdfBuf).toString("base64"),
@@ -211,23 +224,19 @@ app.post("/pdf", async (req, res) => {
   }
 });
 
-// Font status endpoint
 app.get("/font-status", (_, res) => res.json({
-  fontLoaded,
-  fontSize: fontBase64 ? Math.round(fontBase64.length * 3/4 / 1024) + "KB" : null,
+  fontsLoaded,
+  bangla: fonts.bangla ? `${Math.round(fonts.bangla.length * 3/4 / 1024)}KB` : "missing",
+  arial:  fonts.arial  ? `${Math.round(fonts.arial.length  * 3/4 / 1024)}KB` : "missing",
 }));
 
-app.get("/reload-font", async (_, res) => {
-  fontLoaded = false;
-  fontBase64 = null;
-  await loadFont();
-  res.json({ fontLoaded, message: fontLoaded ? "Font reloaded" : "Font load failed" });
+app.get("/reload-fonts", async (_, res) => {
+  fonts = { bangla: null, arial: null };
+  fontsLoaded = false;
+  await loadAllFonts();
+  res.json({ fontsLoaded, bangla: !!fonts.bangla, arial: !!fonts.arial });
 });
 
-app.get("/", (_, res) => res.json({
-  status: "ok",
-  service: "NID PDF API",
-  fontLoaded,
-}));
+app.get("/", (_, res) => res.json({ status: "ok", service: "NID PDF API", fontsLoaded }));
 
-app.listen(PORT, () => console.log(`✅ PDF API on port ${PORT} | Font: loading...`));
+app.listen(PORT, () => console.log(`✅ PDF API on port ${PORT}`));
